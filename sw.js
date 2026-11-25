@@ -1,5 +1,5 @@
 // Offline cache: once installed, RepRise (including the pose model) works without internet.
-const CACHE = "reprise-v1";
+const CACHE = "reprise-v2";
 const FILES = [
   "./",
   "./index.html",

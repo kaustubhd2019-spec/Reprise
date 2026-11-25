@@ -38,7 +38,7 @@ async function shot(page, name) {
 }
 
 async function testFullAlarmFlow() {
-  console.log("1) Full flow: create alarm -> night mode -> rings -> dance -> stops");
+  console.log("1) Full flow: create alarm -> app dims to bedside clock by itself -> rings -> dance -> stops");
   const { browser, page, errors } = await open(DANCE);
   await page.goto(BASE);
   await page.waitForSelector("#view-home:not([hidden])");
@@ -46,8 +46,13 @@ async function testFullAlarmFlow() {
 
   await page.click("#btn-add");
   await page.waitForSelector("#view-edit:not([hidden])");
-  const ringAt = new Date(Date.now() + 60000);
+  // Ring 1-2 minutes from now, so the 30 s idle dimming happens first.
+  const ringAt = new Date(Date.now() + 120000);
   await page.fill("#f-time", hhmm(ringAt));
+  const groups = await page.$$eval("#f-sound optgroup", gs => gs.map(g => `${g.label}:${g.children.length}`));
+  console.log("   sound picker:", groups.join(", "));
+  assert.equal(await page.$$eval("#f-sound option", o => o.length), 14, "14 built-in sounds");
+  assert.equal(await page.inputValue("#f-sound"), "dhol", "new alarms default to the dhol beat");
   await page.click(".challenge:has-text('Dance')");
   await page.click(".chip:has-text('10 s')");
   await page.fill("#f-label", "Morning dance <b>party</b>");
@@ -59,15 +64,24 @@ async function testFullAlarmFlow() {
   await page.waitForTimeout(300);
   await shot(page, "03-home-with-alarm");
 
-  await page.click("#btn-night");
-  await page.waitForSelector("#view-night:not([hidden])");
-  const okCheck = text => [...document.querySelectorAll("#night-checks li.ok")].some(li => li.textContent === text);
-  await page.waitForFunction(`(${okCheck})("Camera ready")`, null, { timeout: 30000 });
-  await page.waitForFunction(`(${okCheck})("Exercise detector loaded")`, null, { timeout: 60000 });
+  // No button to press: after 30 s untouched, the home screen dims into the bedside clock.
+  const tIdle = Date.now();
+  await page.waitForSelector("#view-night:not([hidden])", { timeout: 40000 });
+  console.log(`   bedside clock appeared by itself after ${Math.round((Date.now() - tIdle) / 1000)} s`);
+  assert.equal(await page.$("#btn-night-exit"), null, "no exit button any more");
+  await page.waitForFunction(() => window.RepRise.state.bedside.pose === true && window.RepRise.state.bedside.camera === true, null, { timeout: 60000 });
+  const hints = await page.$$eval("#night-hints li", l => l.map(x => x.textContent));
+  console.log("   bedside hints (problems only):", hints);
+  assert.deepEqual(hints.filter(h => /sound|camera|detector/i.test(h)), [], "no problems to report");
   await shot(page, "04-night");
+  // Tapping the clock shows the alarms; it dims again later.
+  await page.click("#view-night");
+  await page.waitForSelector("#view-home:not([hidden])");
+  await page.click("#btn-bedside");
+  await page.waitForSelector("#view-night:not([hidden])");
 
   console.log(`   waiting for the alarm at ${hhmm(ringAt)}…`);
-  await page.waitForSelector("#view-ring:not([hidden])", { timeout: 80000 });
+  await page.waitForSelector("#view-ring:not([hidden])", { timeout: 130000 });
   const ringStarted = await page.evaluate(() => window.RepRise.state.session.startedAt);
   await page.waitForTimeout(1500);
   const audio = await page.evaluate(() => {
@@ -209,21 +223,25 @@ async function testSettingsAndPractice() {
   await shot(page, "11-settings");
   await page.click("#settings-back");
 
-  // Night mode on/off must really release the screen lock.
+  // With an alarm on, the screen is kept awake; with none, it's released.
   await page.evaluate(() => {
     localStorage.setItem("reprise.alarms", JSON.stringify([{ id: "n", hour: 5, minute: 0, days: [], label: "", enabled: true, challenge: "squats", target: 5, sound: "classic", vibrate: false }]));
   });
   await page.reload();
-  await page.click("#btn-night");
-  await page.waitForSelector("#view-night:not([hidden])");
   await page.waitForTimeout(1500);
-  const awakeOn = await page.evaluate(() => !!document.querySelector("video[src$='keepawake.mp4']") && !document.querySelector("video[src$='keepawake.mp4']").paused);
-  await page.click("#btn-night-exit");
+  const awake = () => page.evaluate(() => { const v = document.querySelector("video[src$='keepawake.mp4']"); return !!v && !v.paused; });
+  const awakeOn = await awake();
+  await page.click("#btn-bedside");
+  await page.waitForSelector("#view-night:not([hidden])");
+  await page.click("#view-night");
+  await page.waitForSelector("#view-home:not([hidden])");
+  await page.click(".alarm .switch");
   await page.waitForTimeout(800);
-  const awakeOff = await page.evaluate(() => { const v = document.querySelector("video[src$='keepawake.mp4']"); return !!v && !v.paused; });
-  console.log(`   screen kept awake in night mode: ${awakeOn}, after exit: ${awakeOff}`);
+  const awakeOff = await awake();
+  console.log(`   screen kept awake with an alarm on: ${awakeOn}, after turning the alarm off: ${awakeOff}`);
   assert.equal(awakeOn, true);
-  assert.equal(awakeOff, false, "exiting night mode releases the keep-awake");
+  assert.equal(awakeOff, false, "no active alarm -> screen can sleep normally");
+  assert.equal(await page.isVisible("#btn-bedside"), false, "no 'Dim now' without an alarm");
 
   await page.click(".practice-btn:has-text('Dance')");
   await page.waitForSelector("#view-ring:not([hidden])");

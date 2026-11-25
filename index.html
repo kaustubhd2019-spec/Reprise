@@ -34,10 +34,8 @@
       <div class="hero-label">Next alarm</div>
       <div class="hero-time" id="next-time">No alarm</div>
       <div class="hero-sub" id="next-sub">Add an alarm below to get started</div>
-      <button type="button" class="btn primary big" id="btn-night">
-        <span aria-hidden="true">🌙</span> Start night mode
-      </button>
-      <p class="hero-hint">At bedtime: start night mode, plug in your charger and leave RepRise on screen.</p>
+      <p class="hero-hint" id="hero-hint"></p>
+      <button type="button" class="btn small ghost" id="btn-bedside"><span aria-hidden="true">🌙</span> Dim now</button>
     </div>
 
     <div class="stats">
@@ -64,11 +62,12 @@
       <summary>How it works &amp; tips</summary>
       <ol>
         <li><b>Set an alarm</b> and choose your challenge: squats, push-ups, jumping jacks or dancing, and how many.</li>
-        <li><b>At bedtime, tap Start night mode.</b> Keep the phone on charge with RepRise open. The screen goes almost black and stays awake.</li>
+        <li><b>At bedtime, just leave RepRise open</b> on your bedside table. After 30 seconds it dims into a clock and keeps the screen on.</li>
         <li><b>Prop the phone up 1.5–2 m away</b> so the camera can see your whole body. Do a practice run first.</li>
-        <li><b>When it rings</b>, do the exercise in front of the camera. The alarm only stops when you finish. It gets quieter while you're moving and loud again if you stop.</li>
+        <li><b>When it rings</b>, do the exercise in front of the camera. There is no stop or snooze button: only finishing the exercise stops it. It gets quieter while you're moving and loud again if you stop.</li>
       </ol>
-      <p class="muted"><b>Why night mode?</b> Phones don't let websites wake themselves up from sleep, so RepRise has to stay open on screen. If you close it, the alarm can't ring. If you close it while it's ringing, it starts again as soon as you reopen it.</p>
+      <p class="muted"><b>Why keep it open?</b> Phones don't let web apps ring while they're closed or the phone is locked, so RepRise stays on screen. If you close it while it's ringing, it starts ringing again as soon as you reopen it.</p>
+      <p class="muted"><b>Charger:</b> recommended, not required. The screen stays on all night, so RepRise reminds you to plug in only if your battery is low.</p>
       <p class="muted"><b>Volume:</b> turn your media volume up. Everything runs on your phone. No account, no internet needed after the first load, and the camera video never leaves your device.</p>
     </details>
 
@@ -185,14 +184,14 @@
   </section>
 
   <!-- ============ NIGHT MODE ============ -->
-  <section id="view-night" class="view night" hidden aria-label="Night mode">
+  <section id="view-night" class="view night" hidden aria-label="Bedside clock">
     <div class="night-inner" id="night-inner">
       <div class="night-clock" id="night-clock">--:--</div>
       <div class="night-date" id="night-date"></div>
       <div class="night-next" id="night-next"></div>
-      <ul class="night-checks" id="night-checks"></ul>
+      <ul class="night-hints" id="night-hints"></ul>
     </div>
-    <button type="button" class="btn ghost night-exit" id="btn-night-exit">Exit night mode</button>
+    <p class="night-tap">Tap anywhere to see your alarms</p>
   </section>
 
   <!-- ============ RINGING / CHALLENGE ============ -->

@@ -2,7 +2,7 @@
 import * as store from "./store.js";
 import { nextAlarm, dueAlarms, describeDays, formatTime, formatCountdown, streakDays, DAY_LETTERS, DAY_NAMES } from "./schedule.js";
 import { CHALLENGES, createCounter, describeChallenge, doneText } from "./counters.js";
-import { BUILTIN_SOUNDS, unlockAudio, audioRunning, loadSound, AlarmPlayer, togglePreview, stopPreview, ding, successJingle, decodeBlob, forgetSound } from "./sound.js";
+import { BUILTIN_SOUNDS, DEFAULT_SOUND, unlockAudio, audioRunning, loadSound, AlarmPlayer, togglePreview, stopPreview, ding, successJingle, decodeBlob, forgetSound } from "./sound.js";
 import { loadPose, poseReady, startCamera, stopCamera, checkCamera, cameraErrorText, Tracker } from "./pose.js";
 import { keepAwake, wakeActive, onWakeChange } from "./wake.js";
 
@@ -18,12 +18,11 @@ const state = {
   settings: store.loadSettings(),
   history: store.loadHistory(),
   view: "home",
-  night: false,
   draft: null,
   draftIsNew: false,
   session: null,
   customSounds: [],
-  nightChecks: {},
+  bedside: { pose: null, camera: null, battery: null },
 };
 
 // ---------------- helpers ----------------
@@ -31,8 +30,10 @@ const state = {
 function show(view) {
   for (const v of document.querySelectorAll(".view")) v.hidden = v.id !== `view-${view}`;
   if (view === "night" || view === "ring") $("toast").hidden = true;
+  if (view !== "night") clearInterval(shiftTimer);
   state.view = view;
   window.scrollTo(0, 0);
+  resetIdle();
 }
 
 let toastTimer = null;
@@ -68,10 +69,10 @@ function fmtDuration(secs) {
   const m = Math.floor(secs / 60), s = secs % 60;
   return s ? `${m} min ${s} s` : `${m} min`;
 }
-function soundName(id) {
-  return BUILTIN_SOUNDS.find(s => s.id === id)?.name || state.customSounds.find(s => s.id === id)?.name || "Classic beeps";
+function saveAlarms() {
+  store.saveAlarms(state.alarms);
+  syncScreenLock();
 }
-function saveAlarms() { store.saveAlarms(state.alarms); }
 function exitFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
 }
@@ -127,7 +128,10 @@ function renderHero() {
     $("next-time").textContent = "No alarm";
     $("next-sub").textContent = state.alarms.length ? "All alarms are off" : "Add an alarm below to get started";
   }
-  $("btn-night").disabled = !next;
+  $("btn-bedside").hidden = !next;
+  $("hero-hint").textContent = next
+    ? "Leave RepRise open by your bed. It dims into a clock by itself and keeps the screen on. If it's closed, the alarm can't ring."
+    : "Add an alarm, then just leave RepRise open by your bed.";
 }
 
 function announceNext(alarm) {
@@ -153,7 +157,7 @@ function renderPracticeGrid() {
 // ---------------- editor ----------------
 
 function newAlarm() {
-  return { id: store.uid(), hour: 6, minute: 30, days: [0, 1, 2, 3, 4, 5, 6], label: "", enabled: true, challenge: "squats", target: 10, sound: "classic", vibrate: true };
+  return { id: store.uid(), hour: 6, minute: 30, days: [0, 1, 2, 3, 4, 5, 6], label: "", enabled: true, challenge: "squats", target: 10, sound: DEFAULT_SOUND, vibrate: true };
 }
 
 function openEditor(alarm) {
@@ -241,16 +245,19 @@ function renderAmounts() {
 function renderSoundSelect() {
   const sel = $("f-sound");
   sel.replaceChildren();
-  const g1 = el("optgroup", { label: "Built-in" });
-  for (const s of BUILTIN_SOUNDS) g1.append(el("option", { value: s.id, textContent: s.name }));
-  sel.append(g1);
+  const groups = new Map();
+  for (const s of BUILTIN_SOUNDS) {
+    if (!groups.has(s.group)) groups.set(s.group, el("optgroup", { label: s.group }));
+    groups.get(s.group).append(el("option", { value: s.id, textContent: s.name }));
+  }
+  sel.append(...groups.values());
   if (state.customSounds.length) {
     const g2 = el("optgroup", { label: "My sounds" });
     for (const s of state.customSounds) g2.append(el("option", { value: s.id, textContent: s.name }));
     sel.append(g2);
   }
   const known = [...sel.options].some(o => o.value === state.draft.sound);
-  sel.value = known ? state.draft.sound : "classic";
+  sel.value = known ? state.draft.sound : DEFAULT_SOUND;
 }
 
 /** Reads the form into the draft. Returns an error message or null. */
@@ -262,7 +269,7 @@ function readForm() {
   d.minute = Number(t.slice(3, 5));
   d.label = $("f-label").value.trim();
   d.vibrate = $("f-vibrate").checked;
-  d.sound = $("f-sound").value || "classic";
+  d.sound = $("f-sound").value || DEFAULT_SOUND;
   if (d.customAmount || !CHALLENGES[d.challenge].counts.includes(d.target)) {
     const n = Math.round(Number($("f-custom").value));
     const max = d.challenge === "dance" ? 300 : 200;
@@ -339,7 +346,7 @@ function renderSettings() {
       if (!confirm(`Delete "${snd.name}"?`)) return;
       await store.deleteSound(snd.id);
       forgetSound(snd.id);
-      for (const a of state.alarms) if (a.sound === snd.id) a.sound = "classic";
+      for (const a of state.alarms) if (a.sound === snd.id) a.sound = DEFAULT_SOUND;
       saveAlarms();
       state.customSounds = await store.listSounds();
       renderSettings();
@@ -365,53 +372,63 @@ function setSetting(key, value) {
   renderSettings();
 }
 
-// ---------------- night mode ----------------
+// ---------------- bedside clock (automatic) ----------------
+// No mode to start or exit: while an alarm is on and RepRise is open, the screen is
+// kept awake, and after a short idle time on the home screen the app fades into a dim
+// clock. Tapping the clock brings the alarm list back. A ringing alarm can only be
+// stopped by finishing the exercise.
 
-let dimTimer = null;
+const IDLE_MS = 30000;
+let idleTimer = null;
 let shiftTimer = null;
 
-async function enterNight() {
-  const next = nextAlarm(state.alarms, new Date());
-  if (!next) return toast("Add an alarm first");
-  // All three need the tap's user activation, so start them together.
-  const pAudio = unlockAudio();
-  const pWake = keepAwake(true);
-  requestFullscreen();
-  state.night = true;
-  state.nightChecks = { audio: null, wake: null, camera: null, pose: poseReady() ? true : null, charging: null };
-  show("night");
-  renderNight();
-  wakeNightScreen();
-  shiftTimer = setInterval(shiftClock, 60000);
+const hasActiveAlarm = () => state.alarms.some(a => a.enabled);
 
-  // Don't let a slow/pending unlock (seen on some iPhones) block the warm-up below.
-  state.nightChecks.audio = (await withTimeout(pAudio, 1500)) ?? audioRunning();
-  state.nightChecks.wake = (await withTimeout(pWake, 1500)) ?? wakeActive();
-  renderNight();
-  // Warm everything up now so the alarm starts instantly in the morning.
-  for (const a of state.alarms.filter(x => x.enabled)) loadSound(a.sound).catch(() => {});
-  loadPose().then(() => { state.nightChecks.pose = true; }, () => { state.nightChecks.pose = false; }).finally(renderNight);
-  checkCamera(state.settings.camera)
-    .then(() => { state.nightChecks.camera = true; }, e => { state.nightChecks.camera = cameraErrorText(e); })
-    .finally(renderNight);
-  try {
-    const bat = await navigator.getBattery?.();
-    if (bat) {
-      const upd = () => { state.nightChecks.charging = bat.charging; renderNight(); };
-      bat.addEventListener("chargingchange", upd);
-      upd();
-    }
-  } catch { /* no battery API (iPhone) */ }
+function syncScreenLock() {
+  keepAwake(!!state.session || hasActiveAlarm());
 }
 
-function exitNight() {
-  state.night = false;
-  clearTimeout(dimTimer);
-  clearInterval(shiftTimer);
-  keepAwake(false);
-  exitFullscreen();
+function resetIdle() {
+  clearTimeout(idleTimer);
+  if (state.view === "home" && !state.session && hasActiveAlarm()) idleTimer = setTimeout(goBedside, IDLE_MS);
+}
+
+function goBedside() {
+  if (state.session || !hasActiveAlarm()) return;
+  show("night");
+  renderNight();
+  shiftTimer = setInterval(shiftClock, 60000);
+  warmUp();
+}
+
+function leaveBedside() {
   show("home");
   renderHome();
+}
+
+/** Loads everything the alarm needs now, so it starts instantly in the morning. */
+async function warmUp() {
+  const w = state.bedside;
+  for (const a of state.alarms.filter(x => x.enabled)) loadSound(a.sound).catch(() => {});
+  if (w.pose !== true) loadPose().then(() => { w.pose = true; }, () => { w.pose = false; }).finally(renderNight);
+  if (w.camera !== true) {
+    let perm = null;
+    try { perm = (await navigator.permissions?.query({ name: "camera" }))?.state; } catch { /* unsupported */ }
+    if (perm === "granted") w.camera = true;
+    else checkCamera(state.settings.camera).then(() => { w.camera = true; }, e => { w.camera = cameraErrorText(e); }).finally(renderNight);
+  }
+  if (!w.batteryHooked) {
+    w.batteryHooked = true;
+    try {
+      const bat = await navigator.getBattery?.();
+      if (bat) {
+        const upd = () => { w.battery = { level: bat.level, charging: bat.charging }; renderNight(); };
+        bat.addEventListener("chargingchange", upd);
+        bat.addEventListener("levelchange", upd);
+        upd();
+      }
+    } catch { /* no battery info (iPhone) */ }
+  }
 }
 
 function renderNight() {
@@ -424,21 +441,16 @@ function renderNight() {
   $("night-next").textContent = next
     ? `⏰ ${fmt(next.alarm.hour, next.alarm.minute)} · ${describeChallenge(next.alarm.challenge, next.alarm.target)} · in ${formatCountdown(next.at - now)}`
     : "No alarm set";
-  const c = state.nightChecks;
-  const items = [];
-  const add = (ok, good, bad) => items.push(el("li", { className: ok === true ? "ok" : ok === null ? "" : "bad", textContent: ok === true ? good : ok === null ? `${good}…` : bad }));
-  add(c.wake ?? (wakeActive() || null), "Screen stays on", "Screen may turn off. Set Auto-Lock/Screen timeout to the longest option");
-  add(c.audio ?? null, "Alarm sound ready", "Tap the screen once to enable sound");
-  add(c.pose, "Exercise detector loaded", "Exercise detector failed to load. Check your connection and reload");
-  add(c.camera === true ? true : c.camera == null ? null : false, "Camera ready", typeof c.camera === "string" ? c.camera : "Camera not available");
-  if (c.charging != null) add(c.charging, "Charging", "Plug in your charger");
-  $("night-checks").replaceChildren(...items);
-}
-
-function wakeNightScreen() {
-  $("view-night").classList.remove("dim");
-  clearTimeout(dimTimer);
-  dimTimer = setTimeout(() => $("view-night").classList.add("dim"), 10000);
+  // Only show something when there's a problem to fix.
+  const w = state.bedside;
+  const hints = [];
+  if (!audioRunning()) hints.push("🔇 Tap the screen once so the alarm can play sound");
+  if (!wakeActive()) hints.push("💡 Your screen may switch off. Set the screen timeout to the longest option");
+  if (w.camera && w.camera !== true) hints.push(`📷 ${w.camera}`);
+  if (w.pose === false) hints.push("⚠️ The exercise detector didn't load. Connect to the internet once and reopen RepRise");
+  const b = w.battery;
+  if (b && !b.charging && b.level < 0.5) hints.push(`🔋 Battery ${Math.round(b.level * 100)}%: plug in so it lasts until morning`);
+  $("night-hints").replaceChildren(...hints.map(h => el("li", { textContent: h })));
 }
 
 function shiftClock() {
@@ -630,14 +642,9 @@ function finishRing(s, { fallback = false } = {}) {
     state.history = store.addHistory({ ts: Date.now(), alarmId: s.alarm.id, challenge: s.alarm.challenge, target: s.alarm.target, secs, fallback });
     const a = state.alarms.find(x => x.id === s.alarm.id);
     if (a && (!a.days || a.days.length === 0)) { a.enabled = false; saveAlarms(); }
-    // A real alarm ends the night.
-    state.night = false;
-    clearInterval(shiftTimer);
-    keepAwake(false);
     exitFullscreen();
-  } else {
-    keepAwake(state.night);
   }
+  syncScreenLock();
   successJingle();
 
   const what = doneText(s.alarm.challenge, s.alarm.target);
@@ -662,7 +669,7 @@ function quitSession() {
   const s = state.session;
   if (!s || s.real) return;
   endSession(s);
-  keepAwake(state.night);
+  syncScreenLock();
   if (s.returnTo === "edit" && state.draft) show("edit");
   else { show("home"); renderHome(); }
 }
@@ -733,7 +740,7 @@ function tick() {
 
 function bind() {
   $("btn-add").addEventListener("click", () => openEditor(null));
-  $("btn-night").addEventListener("click", enterNight);
+  $("btn-bedside").addEventListener("click", goBedside);
   $("btn-settings").addEventListener("click", () => { renderSettings(); show("settings"); });
   $("settings-back").addEventListener("click", () => { show("home"); renderHome(); });
 
@@ -779,13 +786,17 @@ function bind() {
   $("s-skeleton").addEventListener("change", e => setSetting("skeleton", e.target.checked));
   $("s-24h").addEventListener("change", e => setSetting("use24h", e.target.checked));
 
-  $("view-night").addEventListener("click", e => {
-    if (!state.night || e.target.closest("#btn-night-exit")) return;
-    unlockAudio().then(ok => { if (ok && state.nightChecks.audio !== true) { state.nightChecks.audio = true; renderNight(); } });
-    keepAwake(true);
-    wakeNightScreen();
-  });
-  $("btn-night-exit").addEventListener("click", exitNight);
+  $("view-night").addEventListener("click", leaveBedside);
+
+  // Any tap anywhere: unlock sound (browsers need one tap first), keep the screen awake,
+  // and restart the countdown to the bedside clock.
+  const onUserGesture = () => {
+    if (!audioRunning()) unlockAudio();
+    syncScreenLock();
+    resetIdle();
+  };
+  document.addEventListener("pointerup", onUserGesture, { capture: true });
+  document.addEventListener("keydown", onUserGesture, { capture: true });
 
   $("btn-ring-quit").addEventListener("click", quitSession);
   $("tap-overlay").addEventListener("click", () => {
@@ -816,9 +827,13 @@ function bind() {
   });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tick(); });
   onWakeChange(() => { if (state.view === "night") renderNight(); });
+  // A click "activates" the page for sound; pointerup on mouse doesn't, so also listen to click.
+  document.addEventListener("click", () => { if (!audioRunning()) unlockAudio(); }, { capture: true });
 }
 
 // ---------------- install (PWA) ----------------
+// RepRise installs as a web app ("Add to Home screen"), not an APK: nothing is downloaded,
+// the browser just gives it its own icon and full-screen window.
 
 function setupInstall() {
   const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
@@ -826,23 +841,45 @@ function setupInstall() {
     navigator.serviceWorker.register("./sw.js").catch(e => console.warn("SW registration failed", e));
   }
   if (standalone) return;
+  const card = $("install-card"), help = $("install-help"), btn = $("btn-install");
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const inAppBrowser = /; wv\)|FBAN|FBAV|Instagram|Line\/|Snapchat|GSA\//.test(navigator.userAgent);
   let deferred = null;
+  card.hidden = false;
+
+  if (isIOS) {
+    help.textContent = "In Safari, tap the Share button (square with an arrow), then “Add to Home Screen”, then “Add”.";
+    btn.hidden = true;
+    return;
+  }
+  help.textContent = inAppBrowser
+    ? "You're inside another app's browser. Open this page in Chrome first (menu → “Open in Chrome”), then install."
+    : "Tap Install. RepRise gets its own icon like a normal app. (It's not an APK: nothing to download.)";
+
   window.addEventListener("beforeinstallprompt", e => {
     e.preventDefault();
     deferred = e;
-    $("install-card").hidden = false;
+    btn.hidden = false;
   });
-  window.addEventListener("appinstalled", () => { $("install-card").hidden = true; });
-  if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
-    $("install-card").hidden = false;
-    $("install-help").textContent = "In Safari, tap Share, then Add to Home Screen.";
-    $("btn-install").hidden = true;
-  }
-  $("btn-install").addEventListener("click", async () => {
-    if (!deferred) return toast("Use your browser menu → Install app / Add to Home screen");
+  window.addEventListener("appinstalled", () => {
+    help.textContent = "Installed ✓ Open RepRise from your home screen or app drawer.";
+    btn.hidden = true;
+    setTimeout(() => { card.hidden = true; }, 8000);
+  });
+  btn.addEventListener("click", async () => {
+    if (!deferred) {
+      help.textContent = "Tap Chrome's ⋮ menu (top right), then “Install app” or “Add to Home screen”. If you don't see it, open this page in Chrome itself (not inside another app).";
+      return;
+    }
     deferred.prompt();
-    await deferred.userChoice;
+    const { outcome } = await deferred.userChoice;
     deferred = null;
+    if (outcome === "accepted") {
+      help.textContent = "Installing… In a few seconds RepRise appears on your home screen (or in your app drawer). Open it from there.";
+      btn.hidden = true;
+    } else {
+      help.textContent = "Not installed. You can tap Install again any time, or use Chrome's ⋮ menu → “Install app”.";
+    }
   });
 }
 
@@ -864,6 +901,8 @@ async function init() {
     show("home");
     renderHome();
   }
+  syncScreenLock();
+  resetIdle();
   tick();
   setInterval(tick, 1000);
 }
@@ -871,4 +910,4 @@ async function init() {
 init();
 
 // Handy for debugging from the browser console.
-window.RepRise = { state, startRing, tick };
+window.RepRise = { state, startRing, tick, goBedside };
