@@ -38,7 +38,7 @@ The camera only works over **https**, so the app needs to be hosted. GitHub Page
 1. On GitHub open this repository → **Settings → Pages**.
 2. Under **Build and deployment** choose **Source: Deploy from a branch**, branch **main**, folder **/ (root)**, then **Save**.
 3. After a minute or two the app is live at
-   **https://kaustubhd2019-spec.github.io/reprise/**
+   **https://kaustubhd2019-spec.github.io/Reprise/**
 4. On your phone, open that link and **install** it:
    - **Android (Chrome)**: menu ⋮ → **Install app** / **Add to Home screen**.
    - **iPhone (Safari)**: Share → **Add to Home Screen**.
