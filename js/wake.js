@@ -1,4 +1,4 @@
-// Keeps the screen on (night mode and while ringing).
+// Keeps the screen on (while an alarm is set and while ringing).
 // Uses the Screen Wake Lock API, with a silent looping video as a fallback for
 // browsers that don't support it (older iPhones, some home-screen web apps).
 

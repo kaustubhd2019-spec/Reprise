@@ -50,7 +50,7 @@ The camera only works over **https**, so the app needs to be hosted. GitHub Page
 ### Phone settings that help
 
 - Turn **media volume** up. On iPhone, also check that Settings → Safari → Camera is set to **Allow** so it doesn't ask every morning.
-- If the screen still turns off in night mode, set Auto-Lock / Screen timeout to the longest option.
+- If the screen still turns off while RepRise is open, set Auto-Lock / Screen timeout to the longest option.
 - If reps aren't being counted, improve the lighting, step back so your whole body is in view, or switch **Settings → Form strictness → Easy**.
 
 ## Privacy
